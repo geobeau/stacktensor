@@ -26,9 +26,16 @@ pub struct BatchRingBuffer {
     mask: usize,
 }
 
+fn is_power_of_two(n: usize) -> bool {
+    n != 0 && (n & (n - 1)) == 0
+}
+
 impl BatchRingBuffer {
     pub fn new(batches_nr: usize, tensor_size: usize, capacity: usize) -> BatchRingBuffer {
         // TODO: check batches_nr is power of 2
+        if !is_power_of_two(batches_nr) {
+            panic!("Buffer is not power of 2: {batches_nr}")
+        }
         let mut buffer = Vec::with_capacity(batches_nr);
         for _ in 0..batches_nr {
             buffer.push(tensor_batch::TensorBatch::new(tensor_size, capacity));
@@ -61,15 +68,17 @@ impl BatchRingBuffer {
                     let tail = self.tail.load(Ordering::Acquire);
 
                     // Check if we have space (at least one buffer available)
-                    let used = head.wrapping_sub(tail);
-                    if used >= self.buffer.len() {
+                    let new_head = (head + 1) & self.mask;
+                    println!("mask {} {}", self.mask, (head + 1));
+                    println!("buffer full, moving up {head} to {new_head})(tail: {tail})");
+                    if tail == new_head {
                         return Err(AppendError::AllBuffersFull);
                     }
 
                     // Use CAS to ensure only one thread advances head
                     match self.head.compare_exchange_weak(
                         head,
-                        head + 1,
+                        new_head,
                         Ordering::AcqRel,
                         Ordering::Acquire,
                     ) {
@@ -78,6 +87,7 @@ impl BatchRingBuffer {
                             continue;
                         }
                         Err(_) => {
+                            println!("Collision");
                             // Another thread moved head, retry with new head
                             continue;
                         }
@@ -87,5 +97,51 @@ impl BatchRingBuffer {
         }
     }
 
-    pub fn get_ready_buffer() {}
+    pub fn consume_buffer(&self) -> Result<(), AppendError> {
+        let tail = self.tail.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
+        if tail == head {
+            return Err(AppendError::NoBufferReady);
+        }
+        self.buffer[tail].reset();
+
+        let new_tail = (tail + 1) & self.mask;
+        match self
+            .tail
+            .compare_exchange_weak(tail, new_tail, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {
+                // Successfully moved to next buffer, retry append
+                
+                return Ok(());
+            }
+            Err(_) => {
+                println!("Collision");
+                // Another thread moved head, retry with new head
+                return Err(AppendError::NoBufferReady);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_works() {
+        let tensor_size = 1;
+        let capacity = 1;
+        let batches_nr = 4;
+
+        let ringbatch = BatchRingBuffer::new(batches_nr, tensor_size, capacity);
+        for i in 0..(capacity * batches_nr * 4) {
+            println!("Inserting {i}");
+            ringbatch.append(&vec![0u8; tensor_size]).unwrap();
+            let consume = ringbatch.consume_buffer();
+            println!("Consume {consume:?}")
+        }
+        // let final_data = stacked_tensors.get_data().unwrap();
+        // assert_eq!(final_data, &data)
+    }
 }

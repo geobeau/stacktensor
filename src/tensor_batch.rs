@@ -13,6 +13,7 @@ use std::sync::atomic::{fence, AtomicUsize, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppendError {
     AllBuffersFull,
+    NoBufferReady,
 }
 
 enum BatchState {
@@ -157,7 +158,6 @@ impl TensorBatch {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,11 +222,9 @@ mod tests {
             // let r4 = t4.join().unwrap();
             let mut some = 0;
             let mut none = 0;
-            [r1, r2, r3].into_iter().for_each(|x| {
-                match x {
-                    Some(_) => some+=1,
-                    None => none+=1,
-                }
+            [r1, r2, r3].into_iter().for_each(|x| match x {
+                Some(_) => some += 1,
+                None => none += 1,
             });
             assert!(some == 2);
             assert!(none == 1);
@@ -234,7 +232,6 @@ mod tests {
             // Check that all slots are written
             assert_eq!(stacked.written_count(), capacity);
             assert!(stacked.is_ready());
-
         });
     }
 }
